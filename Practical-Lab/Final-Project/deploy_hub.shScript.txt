@@ -1,0 +1,268 @@
+#!/bin/bash
+
+# ==============================================
+# --- >IoT Hub Deployment Script
+# --- >BY: Deema Mohammed AL-Maqadma
+# --- >ID: 2320230766
+# --- >TO: Eng. Mohammed AL-Hams
+# --- >Automates setup of a secure web-based monitoring hub
+# ==============================================
+
+# Requirement 1: Error Handling - Exit immediately if any command fails
+set -e
+
+# Color constants for output
+readonly COLOR_RED="31" # Error messages
+readonly COLOR_GREEN="32" # Success messages
+readonly COLOR_YELLOW="33"
+readonly COLOR_WHITE="37" # Default white
+
+# Function to print colored output using constants for better visibility
+print_status() {
+    local color_code="$1"
+    local message="$2"
+    echo -e "\033[0;${color_code}m${message}\033[0m"
+}
+
+# Function to check sudo privileges  - Must run with sudo
+check_sudo_privileges() {
+    if [ $(id -u) -ne 0 ]; then
+        print_status "$COLOR_RED" "---> ERROR: Please run this script with sudo: sudo $0"
+        exit 1
+    fi
+}
+
+# Function to create simple HTML content
+create_html_content() {
+    local html_file="/tmp/iot_hub_content.html"
+    
+    # Create simplified HTML content
+    cat > $html_file << 'EOF'
+<h1>IoT Hub Dashboard - System Normal</h1>
+<p>Last updated: TIMESTAMP_PLACEHOLDER</p>
+EOF
+    
+    # Replace timestamp placeholder with current date
+    sed -i "s/TIMESTAMP_PLACEHOLDER/$(date)/g" $html_file
+    echo $html_file
+}
+
+# ==============================================
+# Requirement 2: User & Group Management
+# ==============================================
+
+manage_users_groups() {
+    print_status "$COLOR_GREEN" "---> Creating users and groups..."
+    
+    # Create hub_admins group
+    groupadd -f hub_admins
+    print_status "$COLOR_GREEN" "---> Created hub_admins group"
+    
+    # Create iot_admin user with home directory and bash shell
+    if ! id "iot_admin" &>/dev/null; then
+        useradd -m -s /bin/bash iot_admin
+        print_status "$COLOR_GREEN" "---> Created iot_admin user"
+    else
+        print_status "$COLOR_GREEN" "---> iot_admin user already exists"
+    fi
+
+    # Add user to hub_admins group
+    usermod -aG hub_admins iot_admin
+    print_status "$COLOR_GREEN" "---> Added iot_admin to hub_admins group"
+}
+
+# ==============================================
+# Requirement 3: Directory & Permissions Setup
+# ==============================================
+
+setup_directory() {
+    print_status "$COLOR_GREEN" "---> Setting up directory structure..."
+    
+    # Create directory for IoT hub at /srv/iot_hub
+    mkdir -p /srv/iot_hub
+    print_status "$COLOR_GREEN" "---> Created /srv/iot_hub directory"
+
+    # Set ownership to iot_admin:hub_admins
+    chown iot_admin:hub_admins /srv/iot_hub
+
+    # Set permissions to 775 (rwx for owner/group, rx for others)
+    chmod 775 /srv/iot_hub
+    print_status "$COLOR_GREEN" "---> Set directory ownership and permissions"
+}
+
+# ==============================================
+# Requirement 4: Software Installation
+# ==============================================
+
+install_software() {
+    
+    print_status "$COLOR_GREEN" "---> Installing required software..."
+
+    # Update package lists from repositories
+    apt update
+    print_status "$COLOR_GREEN" "---> Updated package lists"
+
+    # Install nginx web server non-interactively
+    apt install nginx -y
+    print_status "$COLOR_GREEN" "---> Nginx installed successfully"
+}
+
+# ==============================================
+# Requirement 5: Firewall Configuration
+# ==============================================
+
+configure_firewall() {
+    print_status "$COLOR_GREEN" "---> Configuring firewall..."
+
+    # Reset firewall to default state
+    ufw --force reset
+
+    # Set default policies: deny incoming, allow outgoing
+    ufw default deny incoming
+    ufw default allow outgoing
+
+    # Allow SSH (port 22) and HTTP (port 80) traffic
+    ufw allow ssh
+    ufw allow http
+    
+    # Enable firewall non-interactively (auto-approve)
+    echo "y" | ufw enable
+    print_status "$COLOR_GREEN" "---> Firewall configured (SSH and HTTP allowed)"
+}
+
+# ==============================================
+# Requirement 6: Content Deployment
+# ==============================================
+
+deploy_content() {
+    print_status "$COLOR_GREEN" "---> Deploying content..."
+    
+    # Get HTML content from external file
+    local html_file=$(create_html_content)
+    
+    # Copy HTML content to target directory
+    cp $html_file /srv/iot_hub/index.html
+    print_status "$COLOR_GREEN" "---> HTML content deployed"
+    
+    # Clean up temporary file
+    rm -f $html_file
+    
+    # Display content for verification
+    print_status "$COLOR_GREEN" "---> HTML content preview:"
+    cat /srv/iot_hub/index.html
+}
+
+# ==============================================
+# Requirement 7: Service Management
+# ==============================================
+
+configure_nginx() {
+    print_status "$COLOR_GREEN" "---> Configuring nginx..."
+
+    # Backup original configuration
+    cp /etc/nginx/sites-available/default /etc/nginx/sites-available/default.backup
+    
+    # Update configuration to serve from custom directory
+    # Using sed to replace the root directory in nginx config file
+    sed -i 's|root /var/www/html;|root /srv/iot_hub;|' /etc/nginx/sites-available/default
+    
+    # Test configuration
+    if nginx -t; then
+        print_status "$COLOR_GREEN" "---> Nginx configuration test passed"
+    else
+        print_status "$COLOR_RED" "---> Nginx configuration test failed"
+        exit 1
+    fi
+}
+
+manage_services() {
+    print_status "$COLOR_GREEN" "---> Managing services..."
+    
+    # Enable nginx to start automatically on system boot
+    systemctl enable nginx
+    print_status "$COLOR_GREEN" "---> Enabled nginx to start on boot"
+    
+    # Restart nginx to apply configuration changes
+    systemctl restart nginx
+    print_status "$COLOR_GREEN" "---> Restarted nginx service"
+
+    # Wait a moment for nginx to fully start
+    sleep 8
+    print_status "$COLOR_GREEN" "---> Nginx service started successfully"
+}
+
+# ==============================================
+# Requirement 8: Final Verification
+# ==============================================
+
+final_verification() {
+    print_status "$COLOR_GREEN" "---> Performing final verification..."
+
+    # Check if nginx process is running
+    if systemctl is-active --quiet nginx; then
+        print_status "$COLOR_GREEN" "---> Nginx service is active"
+
+        # Additional check if nginx is listening on port 80
+        if ss -ltn | grep ':80' >/dev/null; then
+            print_status "$COLOR_GREEN" "---> Nginx is listening on port 80"
+            
+            # Test web page accessibility
+            for i in 1 2 3; do
+                if curl -s -f http://localhost >/dev/null 2>&1; then
+                    print_status "$COLOR_GREEN" "---> SUCCESS: IoT Hub deployment completed successfully!"
+                    print_status "$COLOR_GREEN" "---> Page content:"
+                    curl -s http://localhost
+                    return 0
+                else
+                    print_status "$COLOR_YELLOW" "---> Attempt $i: Web server not ready yet, waiting..."
+                    sleep 2
+                fi
+            done
+            
+            # If we get here, curl failed all attempts
+            print_status "$COLOR_RED" "---> ERROR: Web server is not responding correctly"
+            return 1
+        else
+            print_status "$COLOR_RED" "---> ERROR: Nginx is not listening on port 80"
+            return 1
+        fi
+    else
+        print_status "$COLOR_RED" "---> ERROR: Nginx service is not active"
+        return 1
+    fi
+}
+
+# ==============================================
+# Main Execution Function
+# ==============================================
+
+main() {
+    print_status "$COLOR_GREEN" "---> Starting IoT Hub deployment <---"
+
+    # Calling functions in order
+    check_sudo_privileges
+    manage_users_groups
+    setup_directory
+    install_software
+    configure_firewall
+    deploy_content
+    configure_nginx
+    manage_services
+    
+    if final_verification; then
+        print_status "$COLOR_GREEN" "---> Deployment completed at: $(date)"
+        print_status "$COLOR_GREEN" "---> You can access your IoT Hub at: http://localhost"
+    else
+        print_status "$COLOR_RED" "---> Deployment failed. Check logs for details."
+        exit 1
+    fi
+}
+
+
+# ==============================================
+# Execute main function
+# ==============================================
+
+main "$@"
+
+# By: Deema Mohammed AL-Maqadma, Thx ^_^
